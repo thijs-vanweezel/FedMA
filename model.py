@@ -187,3 +187,87 @@ class ResNet(nn.Module):
         x = x.mean(dim=(2, 3))
         x = self.fc(x)
         return x
+
+
+class _ResNetContainerBlock(nn.Module):
+    """
+    ResNetBlock with independently parameterisable conv1 and conv2 output channels.
+    Used inside ResNetContainer after FedMA matching, where each layer may have a
+    different number of matched neurons.
+    The shortcut (id_conv) is created whenever stride > 1 or in_kernels != out_kernels,
+    mirroring the condition in ResNetBlock.
+    """
+    def __init__(self, in_kernels: int, mid_kernels: int, out_kernels: int, stride: int = 1):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_kernels, mid_kernels, kernel_size=3,
+                               stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(mid_kernels)
+        self.conv2 = nn.Conv2d(mid_kernels, out_kernels, kernel_size=3,
+                               stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_kernels)
+        self.id_conv = (
+            nn.Conv2d(in_kernels, out_kernels, kernel_size=1, stride=stride, bias=False)
+            if stride > 1 or in_kernels != out_kernels else None
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = F.relu(self.bn1(self.conv1(x)))
+        h = self.bn2(self.conv2(h))
+        res = self.id_conv(x) if self.id_conv is not None else x
+        return F.relu(res + h)
+
+
+class ResNetContainer(nn.Module):
+    """
+    Parameterisable ResNet for FedMA post-matching.
+
+    num_filters : flat list of output-channel counts for every main-path conv layer,
+                  in the order produced by pdm_prepare_full_weights_cnn.
+                  Length must be  1 + 2 * sum(layers):
+                    index 0          → initial stem conv
+                    indices 1, 2     → stage-0 block-0  (conv1, conv2)
+                    indices 3, 4     → stage-0 block-1  (conv1, conv2)
+                    ...
+
+    BN γ (weight) parameters are initialised to 1; the matching procedure only
+    targets conv weights and BN β (bias).  γ is re-learned during local retraining.
+    id_conv (shortcut projection) weights are initialised randomly and re-learned;
+    they are reconstructed explicitly only in reconstruct_local_net.
+    """
+    def __init__(
+        self,
+        num_filters: list,
+        layers: tuple = (3, 4, 6, 3),
+        channels_in: int = 3,
+        dim_out: int = 1000,
+    ):
+        super().__init__()
+        assert len(num_filters) == 1 + 2 * sum(layers), (
+            f"num_filters must have length 1+2*sum(layers)={1+2*sum(layers)}, got {len(num_filters)}")
+
+        self.conv = nn.Conv2d(channels_in, num_filters[0],
+                              kernel_size=7, stride=2, padding=3, bias=False)
+        self.bn = nn.BatchNorm2d(num_filters[0])
+
+        blocks = []
+        f_idx = 1           # next position in num_filters
+        in_ch = num_filters[0]
+        for j, num_blocks in enumerate(layers):
+            for i in range(num_blocks):
+                mid_ch = num_filters[f_idx]
+                out_ch = num_filters[f_idx + 1]
+                stride = 2 if (i == 0 and j > 0) else 1
+                blocks.append(_ResNetContainerBlock(in_ch, mid_ch, out_ch, stride=stride))
+                in_ch = out_ch
+                f_idx += 2
+
+        self.layers = nn.Sequential(*blocks)
+        self.fc = nn.Linear(in_ch, dim_out)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.relu(self.bn(self.conv(x)))
+        x = F.max_pool2d(x, kernel_size=3, stride=2, padding=1)
+        x = self.layers(x)
+        x = x.mean(dim=(2, 3))
+        x = self.fc(x)
+        return x

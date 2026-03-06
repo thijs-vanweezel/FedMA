@@ -168,41 +168,105 @@ def local_retrain(local_datasets, weights, args, mode="bottom-up", freezing_inde
                       i.e. freezing_index = 0 means we train the whole network normally
                            freezing_index = len(model) means we freez the entire network
     """
-    num_filters = [weights[0].shape[0], weights[2].shape[0], weights[4].shape[0], weights[6].shape[0], weights[8].shape[0], weights[10].shape[0]]
-    input_dim = weights[12].shape[0]
-    hidden_dims = [weights[12].shape[1], weights[14].shape[1]]
 
-    matched_cnn = ModerateCNNContainer(3,
-                                        num_filters,
-                                        kernel_size=3,
-                                        input_dim=input_dim,
-                                        hidden_dims=hidden_dims,
-                                        output_dim=10)
+    # ------------------------------------------------------------------
+    # 1.  Build matched_cnn from the (post-matching) weight list
+    # ------------------------------------------------------------------
+    if args.model == 'resnet':
+        _DEFAULT_LAYERS = (3, 4, 6, 3)
+        n_main_convs = 1 + 2 * sum(_DEFAULT_LAYERS)   # 33 for ResNet-34
+        num_filters   = [weights[2 * i].shape[0] for i in range(n_main_convs)]
+        dim_out       = weights[-1].shape[0]           # FC bias shape
+        matched_cnn   = ResNetContainer(num_filters, layers=_DEFAULT_LAYERS,
+                                        channels_in=3, dim_out=dim_out)
 
-    new_state_dict = {}
-    n_layers = int(len(weights) / 2)
-    __non_loading_indices = []
+        # Load conv weights and BN biases (β); BN γ left at default 1.
+        # FC weight is stored transposed in the weights list (row = input neuron).
+        matched_cnn.conv.weight.data = torch.from_numpy(
+            weights[0].reshape(matched_cnn.conv.weight.shape)).float()
+        matched_cnn.bn.bias.data = torch.from_numpy(weights[1]).float()
 
-    # handle the conv layers part which is not changing
-    for param_idx, (key_name, param) in enumerate(matched_cnn.state_dict().items()):
-        if "conv" in key_name or "features" in key_name:
-            if "weight" in key_name:
-                temp_dict = {key_name: torch.from_numpy(weights[param_idx].reshape(param.size()))}
-            elif "bias" in key_name:
-                temp_dict = {key_name: torch.from_numpy(weights[param_idx])}
-        elif "fc" in key_name or "classifier" in key_name:
-            if "weight" in key_name:
-                temp_dict = {key_name: torch.from_numpy(weights[param_idx].T)}
-            elif "bias" in key_name:
-                temp_dict = {key_name: torch.from_numpy(weights[param_idx])}
+        w_idx = 1
+        for block in matched_cnn.layers:
+            block.conv1.weight.data = torch.from_numpy(
+                weights[2 * w_idx].reshape(block.conv1.weight.shape)).float()
+            block.bn1.bias.data = torch.from_numpy(weights[2 * w_idx + 1]).float()
+            w_idx += 1
+            block.conv2.weight.data = torch.from_numpy(
+                weights[2 * w_idx].reshape(block.conv2.weight.shape)).float()
+            block.bn2.bias.data = torch.from_numpy(weights[2 * w_idx + 1]).float()
+            w_idx += 1
 
-        new_state_dict.update(temp_dict)
-    matched_cnn.load_state_dict(new_state_dict)
+        matched_cnn.fc.weight.data = torch.from_numpy(weights[2 * w_idx].T).float()
+        matched_cnn.fc.bias.data   = torch.from_numpy(weights[2 * w_idx + 1]).float()
 
-    for param_idx, param in enumerate(matched_cnn.parameters()):
-        # bottom-up: freeze layers before freezing_index
-        if param_idx < freezing_index:
-            param.requires_grad = False
+        # ------------------------------------------------------------------
+        # 2.  Freeze layers (bottom-up).
+        #     n_logical_freeze = freezing_index // 2 logical layers are frozen
+        #     (each logical layer = one conv+BN pair, 2 entries in weights list).
+        #     Layer groups in logical order:
+        #       group 0:  stem conv + bn
+        #       groups 1,2:  block-0 (conv1+bn1, conv2+bn2)
+        #       groups 3,4:  block-1  ...
+        # ------------------------------------------------------------------
+        n_logical_freeze = freezing_index // 2
+
+        if n_logical_freeze > 0:
+            for p in list(matched_cnn.conv.parameters()) + list(matched_cnn.bn.parameters()):
+                p.requires_grad = False
+
+        cur_logical = 1
+        for block in matched_cnn.layers:
+            # conv1 layer occupies logical index cur_logical
+            if cur_logical < n_logical_freeze:
+                for p in list(block.conv1.parameters()) + list(block.bn1.parameters()):
+                    p.requires_grad = False
+            # conv2 (and id_conv if present) occupies logical index cur_logical + 1
+            if cur_logical + 1 < n_logical_freeze:
+                for p in list(block.conv2.parameters()) + list(block.bn2.parameters()):
+                    p.requires_grad = False
+                if block.id_conv is not None:
+                    for p in block.id_conv.parameters():
+                        p.requires_grad = False
+            cur_logical += 2
+
+    else:  # moderate-cnn
+        num_filters = [weights[0].shape[0], weights[2].shape[0], weights[4].shape[0], weights[6].shape[0], weights[8].shape[0], weights[10].shape[0]]
+        input_dim = weights[12].shape[0]
+        hidden_dims = [weights[12].shape[1], weights[14].shape[1]]
+
+        matched_cnn = ModerateCNNContainer(3,
+                                            num_filters,
+                                            kernel_size=3,
+                                            input_dim=input_dim,
+                                            hidden_dims=hidden_dims,
+                                            output_dim=10)
+
+        new_state_dict = {}
+        n_layers = int(len(weights) / 2)
+        __non_loading_indices = []
+
+        # handle the conv layers part which is not changing
+        for param_idx, (key_name, param) in enumerate(matched_cnn.state_dict().items()):
+            if "conv" in key_name or "features" in key_name:
+                if "weight" in key_name:
+                    temp_dict = {key_name: torch.from_numpy(weights[param_idx].reshape(param.size()))}
+                elif "bias" in key_name:
+                    temp_dict = {key_name: torch.from_numpy(weights[param_idx])}
+            elif "fc" in key_name or "classifier" in key_name:
+                if "weight" in key_name:
+                    temp_dict = {key_name: torch.from_numpy(weights[param_idx].T)}
+                elif "bias" in key_name:
+                    temp_dict = {key_name: torch.from_numpy(weights[param_idx])}
+
+            new_state_dict.update(temp_dict)
+        matched_cnn.load_state_dict(new_state_dict)
+
+        for param_idx, param in enumerate(matched_cnn.parameters()):
+            # bottom-up: freeze layers before freezing_index
+            if param_idx < freezing_index:
+                param.requires_grad = False
+
 
     matched_cnn.to(device).train()
     # start training last fc layers:
@@ -256,8 +320,58 @@ def local_retrain(local_datasets, weights, args, mode="bottom-up", freezing_inde
 
 
 def reconstruct_local_net(weights, args, ori_assignments=None, worker_index=0):
-    #[(35, 27), (35,), (68, 315), (68,), (132, 612), (132,), (132, 1188), (132,), 
-    #(260, 1188), (260,), (260, 2340), (260,), 
+    if args.model == 'resnet':
+        # ---------------------------------------------------------------
+        # Reconstruct each worker's local weight list from the globally
+        # matched weights by slicing according to the worker's assignments.
+        # Format mirrors pdm_prepare_full_weights_cnn for ResNet:
+        #   [initial_conv_w, initial_bn_b,
+        #    block0_conv1_w, block0_bn1_b, block0_conv2_w, block0_bn2_b,
+        #    ..., fc_w_T, fc_b]
+        # id_conv weights are not in the matched list; they are re-initialised
+        # randomly and trained during local_retrain.
+        # ---------------------------------------------------------------
+        _DEFAULT_LAYERS = (3, 4, 6, 3)
+        n_main_convs = 1 + 2 * sum(_DEFAULT_LAYERS)   # 33 for ResNet-34
+        reconstructed_weights = []
+
+        # --- logical layer 0: initial stem conv ---
+        # Input (RGB) is not matched; only output filters are sliced.
+        cur_ass = ori_assignments[0][worker_index]
+        reconstructed_weights.append(weights[0][cur_ass, :])          # conv weight
+        reconstructed_weights.append(weights[1][cur_ass])              # bn.bias
+
+        # --- logical layers 1 .. n_main_convs-1: block conv pairs ---
+        for k in range(1, n_main_convs):
+            cur_ass  = ori_assignments[k][worker_index]
+            prev_ass = ori_assignments[k - 1][worker_index]
+            w = weights[2 * k]                      # (global_out, global_in * 9)
+            global_out = w.shape[0]
+            global_in  = weights[2 * (k - 1)].shape[0]   # matched neurons in prev layer
+
+            # Step 1: channel slice (permute input channels by prev_ass)
+            ori_shape_global = (global_out, global_in, 3, 3)
+            trans_w    = trans_next_conv_layer_forward(w, ori_shape_global)
+            sliced_ch  = trans_w[prev_ass, :]
+            ori_shape_out = (global_out, len(prev_ass), 3, 3)
+            w_ch = trans_next_conv_layer_backward(sliced_ch, ori_shape_out)
+
+            # Step 2: filter slice (permute output channels by cur_ass)
+            reconstructed_weights.append(w_ch[cur_ass, :])            # conv weight
+            reconstructed_weights.append(weights[2 * k + 1][cur_ass]) # bn.bias
+
+        # --- logical layer n_main_convs: fully-connected ---
+        # weights[2*n_main_convs] = fc.weight.T stored as (global_in, dim_out)
+        prev_ass = ori_assignments[n_main_convs - 1][worker_index]
+        reconstructed_weights.append(weights[2 * n_main_convs][prev_ass, :])
+        reconstructed_weights.append(weights[2 * n_main_convs + 1])   # fc.bias unchanged
+        return reconstructed_weights
+
+    # -----------------------------------------------------------------------
+    # ModerateCNN path
+    # -----------------------------------------------------------------------
+    #[(35, 27), (35,), (68, 315), (68,), (132, 612), (132,), (132, 1188), (132,),
+    #(260, 1188), (260,), (260, 2340), (260,),
     #(4160, 1025), (1025,), (1025, 515), (515,), (515, 10), (10,)]
     matched_cnn = ModerateCNN()
 
@@ -368,13 +482,15 @@ def reconstruct_local_net(weights, args, ori_assignments=None, worker_index=0):
     return reconstructed_weights
 
 
-def BBP_MAP(nets_list, model_meta_data, layer_type, net_dataidx_map, 
-                            averaging_weights, args, 
+def BBP_MAP(nets_list, model_meta_data, layer_type, net_dataidx_map,
+                            averaging_weights, args,
+                            n_classes=None,
                             device="cpu"):
     # starting the neural matching
     models = nets_list
     cls_freqs = traindata_cls_counts
-    n_classes = args_net_config[-1]
+    if n_classes is None:
+        n_classes = args_net_config[-1]
     it=5
     sigma=args_pdm_sig 
     sigma0=args_pdm_sig0
@@ -511,11 +627,12 @@ def BBP_MAP(nets_list, model_meta_data, layer_type, net_dataidx_map,
     return matched_weights, assignments_list
 
 
-def fedma_comm(batch_weights, model_meta_data, layer_type, net_dataidx_map, 
-                            averaging_weights, args, 
+def fedma_comm(batch_weights, model_meta_data, layer_type, net_dataidx_map,
+                            averaging_weights, args,
                             train_dl_global,
                             test_dl_global,
                             assignments_list,
+                            n_classes=10,
                             comm_round=2,
                             device="cpu"):
     '''
@@ -533,7 +650,6 @@ def fedma_comm(batch_weights, model_meta_data, layer_type, net_dataidx_map,
     sigma0 = 1.0
 
     cls_freqs = traindata_cls_counts
-    n_classes = 10
     batch_freqs = pdm_prepare_freq(cls_freqs, n_classes)
     it=5
 
@@ -551,7 +667,7 @@ def fedma_comm(batch_weights, model_meta_data, layer_type, net_dataidx_map,
             retrained_nets.append(retrained_cnn)
 
         # BBP_MAP step
-        hungarian_weights, assignments_list = BBP_MAP(retrained_nets, model_meta_data, layer_type, net_dataidx_map, averaging_weights, args, device=device)
+        hungarian_weights, assignments_list = BBP_MAP(retrained_nets, model_meta_data, layer_type, net_dataidx_map, averaging_weights, args, n_classes=n_classes, device=device)
 
         logger.info("After retraining and rematching for comm. round: {}, we measure the accuracy ...".format(cr))
         _ = compute_full_cnn_accuracy(models,
@@ -617,7 +733,7 @@ if __name__ == "__main__":
     logger.info("Uniform ensemble (Train acc): {}".format(uens_train_acc))
     logger.info("Uniform ensemble (Test acc): {}".format(uens_test_acc))
 
-    hungarian_weights, assignments_list = BBP_MAP(nets_list, model_meta_data, layer_type, net_dataidx_map, averaging_weights, args, device=device)
+    hungarian_weights, assignments_list = BBP_MAP(nets_list, model_meta_data, layer_type, net_dataidx_map, averaging_weights, args, n_classes=n_classes, device=device)
 
     batch_weights = pdm_prepare_full_weights_cnn(nets_list, device=device)
     total_data_points = sum([len(net_dataidx_map[r]) for r in range(args.n_nets)])
@@ -659,6 +775,7 @@ if __name__ == "__main__":
                              train_dl_global,
                              test_dl_global,
                              assignments_list,
+                             n_classes=n_classes,
                              comm_round=args.comm_round,
                              device=device)
 

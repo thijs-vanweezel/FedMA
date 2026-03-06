@@ -151,22 +151,55 @@ def compute_accuracy(model, dataloader, get_confusion_matrix=False, device="cpu"
 
 def init_models(net_configs, n_nets, args):
     '''
-    Initialize the local CNNs for moderate-cnn on cifar10
+    Initialise local models and build the matched-layer metadata used by the
+    FedMA matching algorithm (model_meta_data, layer_type).
+
+    For ResNet the metadata is constructed explicitly from the same layer
+    ordering as pdm_prepare_full_weights_cnn:
+      (initial conv weight, initial bn.bias,
+       block_0 conv1 weight, block_0 bn1.bias, block_0 conv2 weight, block_0 bn2.bias,
+       ...
+       fc weight.T, fc bias)
+    id_conv (shortcut projection) and BN gamma/running stats are excluded; they
+    are handled separately during weight loading and local retraining.
     '''
 
     cnns = {net_i: None for net_i in range(n_nets)}
-
-    # we add this book keeping to store meta data of model weights
     model_meta_data = []
     layer_type = []
 
-    for cnn_i in range(n_nets):
-        cnn = ModerateCNN()
-        cnns[cnn_i] = cnn
+    if args.model == 'resnet':
+        for cnn_i in range(n_nets):
+            cnns[cnn_i] = ResNet()
+        ref = cnns[0]
+        # --- initial stem ---
+        w = ref.conv.weight
+        model_meta_data.append((w.shape[0], w.shape[1] * w.shape[2] * w.shape[3]))
+        layer_type.append('conv.weight')
+        model_meta_data.append(tuple(ref.bn.bias.shape))
+        layer_type.append('conv.bias')
+        # --- residual blocks ---
+        for block in ref.layers:
+            for conv_attr, bn_attr in [('conv1', 'bn1'), ('conv2', 'bn2')]:
+                conv = getattr(block, conv_attr)
+                bn   = getattr(block, bn_attr)
+                w = conv.weight
+                model_meta_data.append((w.shape[0], w.shape[1] * w.shape[2] * w.shape[3]))
+                layer_type.append(f'{conv_attr}.weight')
+                model_meta_data.append(tuple(bn.bias.shape))
+                layer_type.append(f'{conv_attr}.bias')
+        # --- classifier ---
+        model_meta_data.append(tuple(ref.fc.weight.T.shape))
+        layer_type.append('fc.weight')
+        model_meta_data.append(tuple(ref.fc.bias.shape))
+        layer_type.append('fc.bias')
+    else:  # moderate-cnn
+        for cnn_i in range(n_nets):
+            cnns[cnn_i] = ModerateCNN()
+        for (k, v) in cnns[0].state_dict().items():
+            model_meta_data.append(v.shape)
+            layer_type.append(k)
 
-    for (k, v) in cnns[0].state_dict().items():
-        model_meta_data.append(v.shape)
-        layer_type.append(k)
     return cnns, model_meta_data, layer_type
 
 
@@ -215,44 +248,63 @@ def get_dataloader(dataset, datadir, train_bs, test_bs, dataidxs=None):
 
 def pdm_prepare_full_weights_cnn(nets, device="cpu"):
     """
-    we extract all weights of the conv nets out here:
+    Extract the matched-layer weight list from each network.
+
+    For ModerateCNN the ordering follows the state_dict:
+      (conv.weight_2d, conv.bias, ..., fc.weight.T, fc.bias)
+
+    For ResNet / ResNetContainer the ordering mirrors init_models:
+      (initial_conv_weight_2d, initial_bn.bias,
+       block_0_conv1_weight_2d, block_0_bn1.bias,
+       block_0_conv2_weight_2d, block_0_bn2.bias,
+       ...
+       fc.weight.T, fc.bias)
+    id_conv (shortcut projection) weights and BN gamma / running stats are
+    intentionally excluded – they are not directly matched by the algorithm.
     """
+    def _np(t):
+        """Return a numpy array regardless of CPU / GPU placement."""
+        return t.detach().cpu().numpy()
+
     weights = []
     for net_i, net in enumerate(nets):
         net_weights = []
-        statedict = net.state_dict()
 
-        for param_id, (k, v) in enumerate(statedict.items()):
-            if device == "cpu":
+        if isinstance(net, (ResNet, ResNetContainer)):
+            # --- initial stem ---
+            w = net.conv.weight
+            net_weights.append(_np(w).reshape(w.shape[0], -1))
+            net_weights.append(_np(net.bn.bias))
+            # --- residual blocks (main path only) ---
+            for block in net.layers:
+                for conv_attr, bn_attr in [('conv1', 'bn1'), ('conv2', 'bn2')]:
+                    conv = getattr(block, conv_attr)
+                    bn   = getattr(block, bn_attr)
+                    w = conv.weight
+                    net_weights.append(_np(w).reshape(w.shape[0], -1))
+                    net_weights.append(_np(bn.bias))
+            # --- classifier ---
+            net_weights.append(_np(net.fc.weight).T)
+            net_weights.append(_np(net.fc.bias))
+
+        else:  # ModerateCNN / ModerateCNNContainer
+            statedict = net.state_dict()
+            for param_id, (k, v) in enumerate(statedict.items()):
                 if 'fc' in k or 'classifier' in k:
                     if 'weight' in k:
-                        net_weights.append(v.numpy().T)
+                        net_weights.append(_np(v).T)
                     else:
-                        net_weights.append(v.numpy())
+                        net_weights.append(_np(v))
                 elif 'conv' in k or 'features' in k:
                     if 'weight' in k:
                         _weight_shape = v.size()
                         if len(_weight_shape) == 4:
-                            net_weights.append(v.numpy().reshape(_weight_shape[0], _weight_shape[1]*_weight_shape[2]*_weight_shape[3]))
-                        else:
-                            pass
+                            net_weights.append(_np(v).reshape(
+                                _weight_shape[0],
+                                _weight_shape[1] * _weight_shape[2] * _weight_shape[3]))
                     else:
-                        net_weights.append(v.numpy())
-            else:
-                if 'fc' in k or 'classifier' in k:
-                    if 'weight' in k:
-                        net_weights.append(v.cpu().numpy().T)
-                    else:
-                        net_weights.append(v.cpu().numpy())
-                elif 'conv' in k or 'features' in k:
-                    if 'weight' in k:
-                        _weight_shape = v.size()
-                        if len(_weight_shape) == 4:
-                            net_weights.append(v.cpu().numpy().reshape(_weight_shape[0], _weight_shape[1]*_weight_shape[2]*_weight_shape[3]))
-                        else:
-                            pass
-                    else:
-                        net_weights.append(v.cpu().numpy())
+                        net_weights.append(_np(v))
+
         weights.append(net_weights)
     return weights
 
