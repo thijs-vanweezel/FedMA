@@ -135,7 +135,7 @@ class ImageNet(data.Dataset):
         # Load datum
         c = idx % self.n_clients
         i = idx // self.n_clients
-        label, img_path = self.data[c][i]
+        label, img_path = self.targets[c][i], self.data[c][i]
         with open(img_path, "rb") as f:
             bytesdata = torch.frombuffer(f.read(), dtype=torch.uint8)
         img = torchvision.io.decode_image(bytesdata, mode="RGB").float() / 255.
