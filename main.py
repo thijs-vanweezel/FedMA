@@ -43,7 +43,7 @@ def add_fit_args(parser):
                         help='neural network used in training')
     parser.add_argument('--dataset', type=str, default='cifar10', metavar='N',
                         help='dataset used for training')
-    parser.add_argument('--partition', type=str, default='homo', metavar='N',
+    parser.add_argument('--partition', type=str, default='hetero-dir', metavar='N',
                         help='how to partition the dataset on local workers')
     parser.add_argument('--batch-size', type=int, default=128, metavar='N',
                         help='input batch size for training (default: 64)')
@@ -65,9 +65,9 @@ def add_fit_args(parser):
                         help='the approximate fixed number of data points we will have on each local worker')
     parser.add_argument('--partition_step', type=int, default=0, metavar='PS',
                         help='how many sub groups we are going to use for a particular training process')                          
-    parser.add_argument('--n_nets', type=int, default=2, metavar='NN',
+    parser.add_argument('--n_nets', type=int, default=4, metavar='NN',
                         help='number of workers in a distributed cluster')
-    parser.add_argument('--retrain', type=bool, default=False, 
+    parser.add_argument('--retrain', type=bool, default=True, 
                             help='whether to retrain the model or load model locally')
     parser.add_argument('--rematching', type=bool, default=False, 
                             help='whether to recalculating the matching process (this is for speeding up the debugging process)')
@@ -104,7 +104,7 @@ def train_net(net_id, net, train_dataloader, test_dataloader, epochs, lr, args, 
     cnt = 0
     losses, running_losses = [], []
 
-    for epoch in range(epochs):
+    for epoch in range(epochs): # TODO: add early stopping based on validation set
         epoch_loss_collector = []
         for batch_idx, (x, target) in enumerate(train_dataloader):
             x, target = x.to(device), target.to(device)
@@ -136,20 +136,20 @@ def train_net(net_id, net, train_dataloader, test_dataloader, epochs, lr, args, 
     return train_acc, test_acc
 
 
-def local_train(nets, args, net_dataidx_map, device="cpu"):
+def local_train(nets:dict[torch.Module], args, net_dataidx_map, device="cpu"):
     # save local dataset
     local_datasets = []
     for net_id, net in nets.items():
         if args.retrain:
-            dataidxs = net_dataidx_map[net_id]
+            dataidxs = net_dataidx_map[net_id] # TODO: should use interleaved idxs corresponding to label skew
             logger.info("Training network %s. n_training: %d" % (str(net_id), len(dataidxs)))
             # move the model to cuda device:
             net.to(device)
 
-            train_dl_local, test_dl_local = get_dataloader(args.dataset, args_datadir, args.batch_size, 32, dataidxs)
-            train_dl_global, test_dl_global = get_dataloader(args.dataset, args_datadir, args.batch_size, 32)
+            train_dl_local, test_dl_local = get_dataloader(args.dataset, args_datadir, args.batch_size, 64, dataidxs)
+            train_dl_global, test_dl_global = get_dataloader(args.dataset, args_datadir, args.batch_size, 64)
 
-            local_datasets.append((train_dl_local, test_dl_local))
+            local_datasets.append((train_dl_local, test_dl_local)) # TODO: why
 
             # switch to global test set here
             trainacc, testacc = train_net(net_id, net, train_dl_local, test_dl_global, args.epochs, args.lr, args, device=device)
@@ -291,7 +291,7 @@ def local_retrain(local_datasets, weights, args, mode="bottom-up", freezing_inde
     logger.info('>> Pre-Training Training accuracy: %f' % train_acc)
     logger.info('>> Pre-Training Test accuracy: %f' % test_acc)
 
-    for epoch in range(retrain_epochs):
+    for epoch in range(retrain_epochs): # TODO: should this also be early stopped based on validation set?
         epoch_loss_collector = []
         for batch_idx, (x, target) in enumerate(train_dl_local):
             x, target = x.to(device), target.to(device)
@@ -579,7 +579,7 @@ def BBP_MAP(nets_list, model_meta_data, layer_type, net_dataidx_map,
 
         retrained_nets = []
         for worker_index in range(num_workers):
-            dataidxs = net_dataidx_map[worker_index]
+            dataidxs = net_dataidx_map[worker_index] # TODO: should use interleaved idxs corresponding to label skew
             train_dl_local, test_dl_local = get_dataloader(args.dataset, args_datadir, args.batch_size, 32, dataidxs)
 
             logger.info("Re-training on local worker: {}, starting from layer: {}".format(worker_index, 2 * (layer_index + 1) - 2))
@@ -657,7 +657,7 @@ def fedma_comm(batch_weights, model_meta_data, layer_type, net_dataidx_map,
         logger.info("Entering communication round: {} ...".format(cr))
         retrained_nets = []
         for worker_index in range(args.n_nets):
-            dataidxs = net_dataidx_map[worker_index]
+            dataidxs = net_dataidx_map[worker_index] # TODO: should use interleaved idxs corresponding to label skew
             train_dl_local, test_dl_local = get_dataloader(args.dataset, args_datadir, args.batch_size, 32, dataidxs)
 
             # for the "squeezing" mode, we pass assignment list wrt this worker to the `local_retrain` function
@@ -696,6 +696,7 @@ if __name__ == "__main__":
 
     logger.info("Partitioning data")
 
+    # TODO: unnecessary step, because we use a different type of heterogeneity scheme
     y_train, net_dataidx_map, traindata_cls_counts = partition_data(args.dataset, args_datadir, args_logdir,
                                                             args.partition, args.n_nets, args_alpha, args=args)
 
@@ -725,6 +726,7 @@ if __name__ == "__main__":
 
     train_dl_global, test_dl_global = get_dataloader(args.dataset, args_datadir, args.batch_size, 32)
 
+    # TODO: irrelevant 
     # ensemble part of experiments
     logger.info("Computing Uniform ensemble accuracy")
     uens_train_acc, _ = compute_ensemble_accuracy(nets_list, train_dl_global, n_classes, uniform_weights=True, device=device)
