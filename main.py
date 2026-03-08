@@ -12,9 +12,9 @@ logging.basicConfig()
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-args_logdir = "logs/cifar10"
+args_logdir = "logs/imagenet"
 #args_dataset = "cifar10"
-args_datadir = "./data/cifar10"
+args_datadir = "/thesis/imnetproc"
 args_init_seed = 0
 args_net_config = [3072, 100, 10]
 args_experiment = ["u-ensemble", "pdm"]
@@ -37,9 +37,9 @@ def add_fit_args(parser):
     return a parser added with args required by fit
     """
     # Training settings
-    parser.add_argument('--model', type=str, default='lenet', metavar='N',
+    parser.add_argument('--model', type=str, default='resnet', metavar='N',
                         help='neural network used in training')
-    parser.add_argument('--dataset', type=str, default='cifar10', metavar='N',
+    parser.add_argument('--dataset', type=str, default='imagenet', metavar='N',
                         help='dataset used for training')
     parser.add_argument('--partition', type=str, default='hetero-dir', metavar='N',
                         help='how to partition the dataset on local workers')
@@ -61,6 +61,8 @@ def add_fit_args(parser):
                             help='which type of communication strategy is going to be used: layerwise/blockwise')    
     parser.add_argument('--comm_round', type=int, default=10, 
                             help='how many round of communications we shoud use')  
+    parser.add_argument('--datadir', type=str, default='/thesis/imnetproc',
+                            help='path to dataset directory')
     args = parser.parse_args()
     return args
 
@@ -122,7 +124,7 @@ def train_net(net_id, net, train_dataloader, test_dataloader, epochs, lr, args, 
     return train_acc, test_acc
 
 
-def local_train(nets:dict[torch.Module], args, net_dataidx_map, device="cpu"):
+def local_train(nets, args, net_dataidx_map, device="cpu"):
     # save local dataset
     local_datasets = []
     for net_id, net in nets.items():
@@ -565,7 +567,7 @@ def BBP_MAP(nets_list, model_meta_data, layer_type, net_dataidx_map,
 
         retrained_nets = []
         for worker_index in range(num_workers):
-            dataidxs = net_dataidx_map[worker_index] # TODO: should use interleaved idxs corresponding to label skew
+            dataidxs = net_dataidx_map[worker_index]
             train_dl_local, test_dl_local = get_dataloader(args.dataset, args_datadir, args.batch_size, 32, dataidxs, n_clients=args.n_nets)
 
             logger.info("Re-training on local worker: {}, starting from layer: {}".format(worker_index, 2 * (layer_index + 1) - 2))
@@ -643,7 +645,7 @@ def fedma_comm(batch_weights, model_meta_data, layer_type, net_dataidx_map,
         logger.info("Entering communication round: {} ...".format(cr))
         retrained_nets = []
         for worker_index in range(args.n_nets):
-            dataidxs = net_dataidx_map[worker_index] # TODO: should use interleaved idxs corresponding to label skew
+            dataidxs = net_dataidx_map[worker_index]
             train_dl_local, test_dl_local = get_dataloader(args.dataset, args_datadir, args.batch_size, 32, dataidxs, n_clients=args.n_nets)
 
             # for the "squeezing" mode, we pass assignment list wrt this worker to the `local_retrain` function
@@ -674,6 +676,8 @@ if __name__ == "__main__":
     # Assuming that we are on a CUDA machine, this should print a CUDA device:
     logger.info(device)
     args = add_fit_args(argparse.ArgumentParser(description='Probabilistic Federated CNN Matching'))
+
+    args_datadir = args.datadir
 
     seed = 0
 

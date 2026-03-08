@@ -79,8 +79,8 @@ def train_aug(img:torch.Tensor, seed, mask:torch.Tensor=None):
     return img, mask
 
 class ImageNet(data.Dataset):
-    def __init__(self, path:str="/data/weezeltggv/thesis/imnetproc", partition:str="train", n_clients:int=4, 
-                 n_classes:int=1000, originalpath:str="/data/weezeltggv/thesis/imagenet"):
+    def __init__(self, path:str="/thesis/imnetproc", partition:str="train", n_clients:int=4, 
+                 n_classes:int=1000, originalpath:str="/thesis/imagenet"):
         # Set random seed. Wait for global seed to be set, so that each worker gets different seed.
         self.diff_seed = None 
         self.same_seed = torch.Generator()
@@ -145,14 +145,19 @@ class ImageNet(data.Dataset):
             img, _ = train_aug(img, seed=self.diff_seed)
         else: img = self.val_crop(img)
         self.normalize(img)
-        # Change to HWC
-        img = torch.permute(img, (1,2,0))
-        return label, img
+        return img, label
     
 class ImageNet_truncated(ImageNet):
     def __init__(self, dataidxs, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.dataidxs = dataidxs
+
+    def __len__(self):
+        if self.dataidxs is not None:
+            return len(self.dataidxs)
+        return super().__len__()
+
     def __getitem__(self, idx):
-        idx = self.dataidxs[idx]
+        if self.dataidxs is not None:
+            idx = self.dataidxs[idx]
         return super().__getitem__(idx)

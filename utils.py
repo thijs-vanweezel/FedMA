@@ -23,7 +23,7 @@ from torch.autograd import Variable
 import torch.nn.functional as F
 import torch.nn as nn
 import torch.nn.init as init
-from datasets import CIFAR10_truncated, ImageNet_truncated
+from datasets import CIFAR10_truncated, ImageNet, ImageNet_truncated
 from combine_nets import prepare_uniform_weights, prepare_sanity_weights, prepare_weight_matrix, normalize_weights, get_weighted_average_pred
 
 from model import *
@@ -63,8 +63,7 @@ def record_net_data_stats(y_train, net_dataidx_map, logdir):
 
 def partition_data(dataset, datadir, logdir, partition, n_nets, alpha, args):
 
-    X_train, y_train, X_test, y_test = load_imagenet_data(datadir)
-    n_train = X_train.shape[0]
+    y_train, n_train = load_imagenet_data(datadir, n_clients=n_nets)
 
     if partition == "homo":
         idxs = np.random.permutation(n_train)
@@ -72,17 +71,26 @@ def partition_data(dataset, datadir, logdir, partition, n_nets, alpha, args):
         net_dataidx_map = {i: batch_idxs[i] for i in range(n_nets)}
 
     elif partition == "hetero-dir":
-        net_dataidx_map = {c: range(c, len(X_train), n_nets) for c in range(n_nets)}
+        # Each client receives every n_nets-th sample starting at its index,
+        # which naturally assigns interleaved label groups (see ImageNet dataset).
+        net_dataidx_map = {c: np.arange(c, n_train, n_nets) for c in range(n_nets)}
 
     traindata_cls_counts = record_net_data_stats(y_train, net_dataidx_map, logdir)
     return y_train, net_dataidx_map, traindata_cls_counts
 
-def load_imagenet_data(datadir):
-    train_ds = ImageNet_truncated(datadir, partition="train")
-    test_ds = ImageNet_truncated(datadir, partition="val")
-    X_train, y_train = train_ds.data, train_ds.target
-    X_test, y_test = test_ds.data, test_ds.target
-    return (X_train, y_train, X_test, y_test)
+def load_imagenet_data(datadir, n_clients):
+    """Return a flat y_train array (in interleaved order) and its length.
+
+    The ImageNet dataset stores samples interleaved by client: sample at
+    global index i belongs to client i % n_clients, so
+    y_train[i] = ds.targets[i % n_clients][i // n_clients].
+    """
+    ds = ImageNet(partition="train", n_clients=n_clients)
+    n = len(ds)
+    y_train = np.array([
+        ds.targets[i % n_clients][i // n_clients] for i in range(n)
+    ])
+    return y_train, n
 
 def compute_accuracy(model, dataloader, get_confusion_matrix=False, device="cpu"):
 
@@ -190,14 +198,18 @@ def load_model(model, model_index, rank=0, device="cpu"):
     return model
 
 def get_dataloader(dataset, datadir, train_bs, test_bs, dataidxs=None, **kwargs):
-    assert dataidxs is None or "n_clients" in kwargs
-    train_ds = ImageNet_truncated(partition="train", dataidxs=dataidxs, **kwargs)
-    test_ds = ImageNet_truncated(partition="test", dataidxs=dataidxs, **kwargs)
+    # Pop ImageNet-specific kwargs so they are not forwarded to DataLoader.
+    n_clients = kwargs.pop("n_clients", None)
+    assert dataidxs is None or n_clients is not None, \
+        "n_clients must be provided when dataidxs is not None"
+    img_kwargs = {} if n_clients is None else {"n_clients": n_clients}
+    train_ds = ImageNet_truncated(dataidxs=dataidxs, partition="train", **img_kwargs)
+    test_ds  = ImageNet_truncated(dataidxs=dataidxs, partition="test",   **img_kwargs)
     train_dl = data.DataLoader(
         train_ds,
         batch_size=train_bs,
         drop_last=True,
-        shuffle=False, 
+        shuffle=False,
         sampler=None,
         **kwargs
     )
