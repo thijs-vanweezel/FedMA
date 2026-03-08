@@ -17,14 +17,12 @@ args_logdir = "logs/cifar10"
 args_datadir = "./data/cifar10"
 args_init_seed = 0
 args_net_config = [3072, 100, 10]
-#args_partition = "hetero-dir"
-args_partition = "homo"
 args_experiment = ["u-ensemble", "pdm"]
 args_trials = 1
 #args_lr = 0.01
 args_epochs = 5
 args_reg = 1e-5
-args_alpha = 0.5
+args_alpha = 1.
 args_communication_rounds = 5
 args_iter_epochs=None
 
@@ -51,26 +49,14 @@ def add_fit_args(parser):
                         help='learning rate (default: 0.01)')
     parser.add_argument('--retrain_lr', type=float, default=0.1, metavar='RLR',
                         help='learning rate using in specific for local network retrain (default: 0.01)')
-    parser.add_argument('--fine_tune_lr', type=float, default=0.1, metavar='FLR',
-                        help='learning rate using in specific for fine tuning the softmax layer on the data center (default: 0.01)')
     parser.add_argument('--epochs', type=int, default=5, metavar='EP',
                         help='how many epochs will be trained in a training process')
     parser.add_argument('--retrain_epochs', type=int, default=10, metavar='REP',
                         help='how many epochs will be trained in during the locally retraining process')
-    parser.add_argument('--fine_tune_epochs', type=int, default=10, metavar='FEP',
-                        help='how many epochs will be trained in during the fine tuning process')
-    parser.add_argument('--partition_step_size', type=int, default=6, metavar='PSS',
-                        help='how many groups of partitions we will have')
-    parser.add_argument('--local_points', type=int, default=5000, metavar='LP',
-                        help='the approximate fixed number of data points we will have on each local worker')
-    parser.add_argument('--partition_step', type=int, default=0, metavar='PS',
-                        help='how many sub groups we are going to use for a particular training process')                          
     parser.add_argument('--n_nets', type=int, default=4, metavar='NN',
                         help='number of workers in a distributed cluster')
     parser.add_argument('--retrain', type=bool, default=True, 
                             help='whether to retrain the model or load model locally')
-    parser.add_argument('--rematching', type=bool, default=False, 
-                            help='whether to recalculating the matching process (this is for speeding up the debugging process)')
     parser.add_argument('--comm_type', type=str, default='layerwise', 
                             help='which type of communication strategy is going to be used: layerwise/blockwise')    
     parser.add_argument('--comm_round', type=int, default=10, 
@@ -146,7 +132,7 @@ def local_train(nets:dict[torch.Module], args, net_dataidx_map, device="cpu"):
             # move the model to cuda device:
             net.to(device)
 
-            train_dl_local, test_dl_local = get_dataloader(args.dataset, args_datadir, args.batch_size, 64, dataidxs)
+            train_dl_local, test_dl_local = get_dataloader(args.dataset, args_datadir, args.batch_size, 64, dataidxs, n_clients=args.n_nets)
             train_dl_global, test_dl_global = get_dataloader(args.dataset, args_datadir, args.batch_size, 64)
 
             local_datasets.append((train_dl_local, test_dl_local)) # TODO: why
@@ -580,7 +566,7 @@ def BBP_MAP(nets_list, model_meta_data, layer_type, net_dataidx_map,
         retrained_nets = []
         for worker_index in range(num_workers):
             dataidxs = net_dataidx_map[worker_index] # TODO: should use interleaved idxs corresponding to label skew
-            train_dl_local, test_dl_local = get_dataloader(args.dataset, args_datadir, args.batch_size, 32, dataidxs)
+            train_dl_local, test_dl_local = get_dataloader(args.dataset, args_datadir, args.batch_size, 32, dataidxs, n_clients=args.n_nets)
 
             logger.info("Re-training on local worker: {}, starting from layer: {}".format(worker_index, 2 * (layer_index + 1) - 2))
             retrained_cnn = local_retrain((train_dl_local,test_dl_local), tempt_weights[worker_index], args, 
@@ -658,7 +644,7 @@ def fedma_comm(batch_weights, model_meta_data, layer_type, net_dataidx_map,
         retrained_nets = []
         for worker_index in range(args.n_nets):
             dataidxs = net_dataidx_map[worker_index] # TODO: should use interleaved idxs corresponding to label skew
-            train_dl_local, test_dl_local = get_dataloader(args.dataset, args_datadir, args.batch_size, 32, dataidxs)
+            train_dl_local, test_dl_local = get_dataloader(args.dataset, args_datadir, args.batch_size, 32, dataidxs, n_clients=args.n_nets)
 
             # for the "squeezing" mode, we pass assignment list wrt this worker to the `local_retrain` function
             recons_local_net = reconstruct_local_net(batch_weights[worker_index], args, ori_assignments=assignments_list, worker_index=worker_index)
@@ -696,7 +682,6 @@ if __name__ == "__main__":
 
     logger.info("Partitioning data")
 
-    # TODO: unnecessary step, because we use a different type of heterogeneity scheme
     y_train, net_dataidx_map, traindata_cls_counts = partition_data(args.dataset, args_datadir, args_logdir,
                                                             args.partition, args.n_nets, args_alpha, args=args)
 

@@ -23,7 +23,7 @@ from torch.autograd import Variable
 import torch.nn.functional as F
 import torch.nn as nn
 import torch.nn.init as init
-from datasets import CIFAR10_truncated
+from datasets import CIFAR10_truncated, ImageNet_truncated
 from combine_nets import prepare_uniform_weights, prepare_sanity_weights, prepare_weight_matrix, normalize_weights, get_weighted_average_pred
 
 from model import *
@@ -63,7 +63,7 @@ def record_net_data_stats(y_train, net_dataidx_map, logdir):
 
 def partition_data(dataset, datadir, logdir, partition, n_nets, alpha, args):
 
-    X_train, y_train, X_test, y_test = load_cifar10_data(datadir)
+    X_train, y_train, X_test, y_test = load_imagenet_data(datadir)
     n_train = X_train.shape[0]
 
     if partition == "homo":
@@ -72,43 +72,16 @@ def partition_data(dataset, datadir, logdir, partition, n_nets, alpha, args):
         net_dataidx_map = {i: batch_idxs[i] for i in range(n_nets)}
 
     elif partition == "hetero-dir":
-        min_size = 0
-        K = 10
-        N = y_train.shape[0]
-        net_dataidx_map = {}
-
-        while min_size < 10:
-            idx_batch = [[] for _ in range(n_nets)]
-            # for each class in the dataset
-            for k in range(K):
-                idx_k = np.where(y_train == k)[0]
-                np.random.shuffle(idx_k)
-                proportions = np.random.dirichlet(np.repeat(alpha, n_nets))
-                ## Balance
-                proportions = np.array([p*(len(idx_j)<N/n_nets) for p,idx_j in zip(proportions,idx_batch)])
-                proportions = proportions/proportions.sum()
-                proportions = (np.cumsum(proportions)*len(idx_k)).astype(int)[:-1]
-                idx_batch = [idx_j + idx.tolist() for idx_j,idx in zip(idx_batch,np.split(idx_k,proportions))]
-                min_size = min([len(idx_j) for idx_j in idx_batch])
-
-        for j in range(n_nets):
-            np.random.shuffle(idx_batch[j])
-            net_dataidx_map[j] = idx_batch[j]
+        net_dataidx_map = {c: range(c, len(X_train), n_nets) for c in range(n_nets)}
 
     traindata_cls_counts = record_net_data_stats(y_train, net_dataidx_map, logdir)
     return y_train, net_dataidx_map, traindata_cls_counts
 
-
-def load_cifar10_data(datadir):
-
-    transform = transforms.Compose([transforms.ToTensor()])
-
-    cifar10_train_ds = CIFAR10_truncated(datadir, train=True, download=True, transform=transform)
-    cifar10_test_ds = CIFAR10_truncated(datadir, train=False, download=True, transform=transform)
-
-    X_train, y_train = cifar10_train_ds.data, cifar10_train_ds.target
-    X_test, y_test = cifar10_test_ds.data, cifar10_test_ds.target
-
+def load_imagenet_data(datadir):
+    train_ds = ImageNet_truncated(datadir, partition="train")
+    test_ds = ImageNet_truncated(datadir, partition="val")
+    X_train, y_train = train_ds.data, train_ds.target
+    X_test, y_test = test_ds.data, test_ds.target
     return (X_train, y_train, X_test, y_test)
 
 def compute_accuracy(model, dataloader, get_confusion_matrix=False, device="cpu"):
@@ -216,33 +189,26 @@ def load_model(model, model_index, rank=0, device="cpu"):
     model.to(device)
     return model
 
-
-def get_dataloader(dataset, datadir, train_bs, test_bs, dataidxs=None):
-
-    dl_obj = CIFAR10_truncated
-
-    normalize = transforms.Normalize(mean=[x/255.0 for x in [125.3, 123.0, 113.9]],
-                        std=[x/255.0 for x in [63.0, 62.1, 66.7]])
-    transform_train = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Lambda(lambda x: F.pad(
-                            Variable(x.unsqueeze(0), requires_grad=False),
-                            (4,4,4,4),mode='reflect').data.squeeze()),
-        transforms.ToPILImage(),
-        transforms.RandomCrop(32),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        normalize,
-        ])
-    # data prep for test set
-    transform_test = transforms.Compose([transforms.ToTensor(), normalize])
-
-    train_ds = dl_obj(datadir, dataidxs=dataidxs, train=True, transform=transform_train, download=True)
-    test_ds = dl_obj(datadir, train=False, transform=transform_test, download=True)
-
-    train_dl = data.DataLoader(dataset=train_ds, batch_size=train_bs, shuffle=True)
-    test_dl = data.DataLoader(dataset=test_ds, batch_size=test_bs, shuffle=False)
-
+def get_dataloader(dataset, datadir, train_bs, test_bs, dataidxs=None, **kwargs):
+    assert dataidxs is None or "n_clients" in kwargs
+    train_ds = ImageNet_truncated(partition="train", dataidxs=dataidxs, **kwargs)
+    test_ds = ImageNet_truncated(partition="test", dataidxs=dataidxs, **kwargs)
+    train_dl = data.DataLoader(
+        train_ds,
+        batch_size=train_bs,
+        drop_last=True,
+        shuffle=False, 
+        sampler=None,
+        **kwargs
+    )
+    test_dl = data.DataLoader(
+        test_ds,
+        batch_size=test_bs,
+        drop_last=False,
+        shuffle=False,
+        sampler=None,
+        **kwargs
+    )
     return train_dl, test_dl
 
 

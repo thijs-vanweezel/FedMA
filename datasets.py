@@ -79,8 +79,8 @@ def train_aug(img:torch.Tensor, seed, mask:torch.Tensor=None):
     return img, mask
 
 class ImageNet(data.Dataset):
-    def __init__(self, path:str="/data/bucket/traincombmodels/imnetproc", partition:str="train", n_clients:int=4, 
-                 n_classes:int=1000, originalpath:str="/data/bucket/traincombmodels/imagenet"):
+    def __init__(self, path:str="/data/weezeltggv/thesis/imnetproc", partition:str="train", n_clients:int=4, 
+                 n_classes:int=1000, originalpath:str="/data/weezeltggv/thesis/imagenet"):
         # Set random seed. Wait for global seed to be set, so that each worker gets different seed.
         self.diff_seed = None 
         self.same_seed = torch.Generator()
@@ -99,6 +99,7 @@ class ImageNet(data.Dataset):
         classes = {i:line.split()[0] for i, line in enumerate(classes)}
         # Assign sample paths to each client
         self.data = {c: [] for c in range(n_clients)}
+        self.targets = {c: [] for c in range(n_clients)}
         client = 0
         for class_idx in range(n_classes):
             classname = classes[class_idx]
@@ -107,30 +108,15 @@ class ImageNet(data.Dataset):
                 dirname = os.path.join(path, partition, classname)
                 filelist = os.listdir(dirname)
                 self.data[client].extend([
-                    (class_idx, os.path.join(dirname, file)) for file in filelist
+                    os.path.join(dirname, file) for file in filelist
                 ])
+                self.targets[client].extend([class_idx]*len(filelist))
                 client = (client+1) % n_clients
         self.prev_idx = float("inf")
         # Misc attributes
         self.n_clients = n_clients
         self.n_classes = n_classes
 
-    @staticmethod
-    def repartition(originalpath, newpath, train_frac=0.8):
-        """Divides the train partition into train/val/test"""
-        os.makedirs(os.path.join(newpath, "train"))
-        os.makedirs(os.path.join(newpath, "val"))
-        os.makedirs(os.path.join(newpath, "test"))
-        for classname in tqdm(os.listdir(os.path.join(originalpath, "Data", "CLS-LOC", "train")), leave=False):
-            os.mkdir(os.path.join(newpath, "train", classname))
-            os.mkdir(os.path.join(newpath, "val", classname))
-            os.mkdir(os.path.join(newpath, "test", classname))
-            files = os.listdir(os.path.join(originalpath, "Data", "CLS-LOC", "train", classname))
-            for i, file in enumerate(files):
-                partition = "train" if i<len(files)*train_frac else \
-                "val" if i<len(files)*(train_frac+(1-train_frac)/2) else "test"
-                shutil.copy(os.path.join(originalpath, "Data", "CLS-LOC", "train", classname, file), os.path.join(newpath, partition, classname))
-    
     def __len__(self):
         # Take minimum of client lengths (many papers focus on quantity imbalance, which we do not address)
         return min([len(files) for files in self.data.values()])*self.n_clients
@@ -162,3 +148,11 @@ class ImageNet(data.Dataset):
         # Change to HWC
         img = torch.permute(img, (1,2,0))
         return label, img
+    
+class ImageNet_truncated(ImageNet):
+    def __init__(self, dataidxs, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.dataidxs = dataidxs
+    def __getitem__(self, idx):
+        idx = self.dataidxs[idx]
+        return super().__getitem__(idx)
