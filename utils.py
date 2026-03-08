@@ -73,7 +73,11 @@ def partition_data(dataset, datadir, logdir, partition, n_nets, alpha, args):
     elif partition == "hetero-dir":
         # Each client receives every n_nets-th sample starting at its index,
         # which naturally assigns interleaved label groups (see ImageNet dataset).
-        net_dataidx_map = {c: np.arange(c, n_train, n_nets) for c in range(n_nets)}
+        net_dataidx_map = {}
+        for c in range(n_nets):
+            idxs = np.arange(c, n_train, n_nets)
+            idxs = idxs[np.random.permutation(len(idxs))]
+            net_dataidx_map[c] = idxs
 
     traindata_cls_counts = record_net_data_stats(y_train, net_dataidx_map, logdir)
     return y_train, net_dataidx_map, traindata_cls_counts
