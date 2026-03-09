@@ -1,5 +1,6 @@
 import numpy as np
-from lapsolver import solve_dense
+from scipy.optimize import linear_sum_assignment
+# from lapsolver import solve_dense
 import logging
 
 import torch
@@ -67,8 +68,8 @@ def matching_upd_j(atoms_j, global_atoms, global_atoms_squared, sigma, sigma0, m
     compute_cost_dur = time.time() - compute_cost_start
     logger.info("Compute cost duration: {}".format(compute_cost_dur))
 
-    #row_ind, col_ind = linear_sum_assignment(-full_cost)
-    row_ind, col_ind = solve_dense(-full_cost)
+    row_ind, col_ind = linear_sum_assignment(-full_cost)
+    # row_ind, col_ind = solve_dense(-full_cost)
 
     assignment_j = []
     

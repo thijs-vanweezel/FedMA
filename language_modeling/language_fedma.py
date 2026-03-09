@@ -2,7 +2,8 @@ import copy
 import logging
 import numpy as np
 
-from lapsolver import solve_dense
+from scipy.optimize import linear_sum_assignment
+# from lapsolver import solve_dense
 
 ##########################
 # For the use of SPAHM
@@ -52,9 +53,8 @@ def matching_upd_j(weights_j, global_weights, sigma_inv_j, global_sigmas, prior_
     full_cost = compute_cost(global_weights, weights_j, global_sigmas, sigma_inv_j, prior_mean_norm, prior_inv_sigma,
                              popularity_counts, gamma, J)
 
-    #row_ind, col_ind = linear_sum_assignment(-full_cost)
-    # please note that this can not run on non-Linux systems
-    row_ind, col_ind = solve_dense(-full_cost)
+    row_ind, col_ind = linear_sum_assignment(-full_cost)
+    # row_ind, col_ind = solve_dense(-full_cost)
 
     assignment_j = []
 

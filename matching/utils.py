@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
-from lapsolver import solve_dense
+# from lapsolver import solve_dense
 import time
 
 logging.basicConfig()
