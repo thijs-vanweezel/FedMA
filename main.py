@@ -48,9 +48,9 @@ def add_fit_args(parser):
                         help='how to partition the dataset on local workers')
     parser.add_argument('--batch-size', type=int, default=128, metavar='N',
                         help='input batch size for training (default: 64)')
-    parser.add_argument('--lr', type=float, default=0.1, metavar='LR',
+    parser.add_argument('--lr', type=float, default=1e-3, metavar='LR',
                         help='learning rate (default: 0.01)')
-    parser.add_argument('--retrain_lr', type=float, default=0.1, metavar='RLR',
+    parser.add_argument('--retrain_lr', type=float, default=1e-3, metavar='RLR',
                         help='learning rate using in specific for local network retrain (default: 0.01)')
     parser.add_argument('--epochs', type=int, default=5, metavar='EP',
                         help='how many epochs will be trained in a training process')
@@ -83,7 +83,7 @@ def train_net(net_id, net, train_dataloader, test_dataloader, epochs, lr, args, 
     logger.info('n_training: %d' % len(train_dataloader))
     logger.info('n_test: %d' % len(test_dataloader))
 
-    optimizer = optim.Adam(net.parameters(), lr=lr, momentum=0.9)
+    optimizer = optim.Adam(net.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss().to(device)
 
     cnt = 0
@@ -260,10 +260,10 @@ def local_retrain(local_datasets, weights, args, mode="bottom-up", freezing_inde
     test_dl_local = local_datasets[1]
 
     if freezing_index < (len(weights) - 2):
-        optimizer_fine_tune = optim.SGD(filter(lambda p: p.requires_grad, matched_cnn.parameters()), lr=args.retrain_lr, momentum=0.9)
+        optimizer_fine_tune = optim.Adam(filter(lambda p: p.requires_grad, matched_cnn.parameters()), lr=args.retrain_lr)
         retrain_epochs = args.retrain_epochs
     else:
-        optimizer_fine_tune = optim.SGD(filter(lambda p: p.requires_grad, matched_cnn.parameters()), lr=(args.retrain_lr/10), momentum=0.9, weight_decay=0.0001)
+        optimizer_fine_tune = optim.Adam(filter(lambda p: p.requires_grad, matched_cnn.parameters()), lr=(args.retrain_lr/10))
         retrain_epochs = int(args.retrain_epochs * 3)
 
     criterion_fine_tune = nn.CrossEntropyLoss().to(device)
