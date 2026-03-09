@@ -7,6 +7,9 @@ from matching.pfnm import layer_wise_group_descent
 from matching.pfnm import block_patching, patch_weights
 
 from matching_performance import compute_model_averaging_accuracy, compute_full_cnn_accuracy
+from tqdm.auto import tqdm
+import multiprocessing as mp
+torch.multiprocessing.set_sharing_strategy('file_system')
 
 logging.basicConfig()
 logger = logging.getLogger()
@@ -51,7 +54,7 @@ def add_fit_args(parser):
                         help='learning rate using in specific for local network retrain (default: 0.01)')
     parser.add_argument('--epochs', type=int, default=5, metavar='EP',
                         help='how many epochs will be trained in a training process')
-    parser.add_argument('--retrain_epochs', type=int, default=10, metavar='REP',
+    parser.add_argument('--retrain_epochs', type=int, default=5, metavar='REP',
                         help='how many epochs will be trained in during the locally retraining process')
     parser.add_argument('--n_nets', type=int, default=4, metavar='NN',
                         help='number of workers in a distributed cluster')
@@ -59,7 +62,7 @@ def add_fit_args(parser):
                             help='whether to retrain the model or load model locally')
     parser.add_argument('--comm_type', type=str, default='layerwise', 
                             help='which type of communication strategy is going to be used: layerwise/blockwise')    
-    parser.add_argument('--comm_round', type=int, default=10, 
+    parser.add_argument('--comm_round', type=int, default=2, 
                             help='how many round of communications we shoud use')  
     parser.add_argument('--datadir', type=str, default='/thesis/imnetproc',
                             help='path to dataset directory')
@@ -80,21 +83,15 @@ def train_net(net_id, net, train_dataloader, test_dataloader, epochs, lr, args, 
     logger.info('n_training: %d' % len(train_dataloader))
     logger.info('n_test: %d' % len(test_dataloader))
 
-    train_acc = compute_accuracy(net, train_dataloader, device=device)
-    test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, device=device)
-
-    logger.info('>> Pre-Training Training accuracy: {}'.format(train_acc))
-    logger.info('>> Pre-Training Test accuracy: {}'.format(test_acc))
-
-    optimizer = optim.SGD(net.parameters(), lr=lr, momentum=0.9)
+    optimizer = optim.Adam(net.parameters(), lr=lr, momentum=0.9)
     criterion = nn.CrossEntropyLoss().to(device)
 
     cnt = 0
     losses, running_losses = [], []
 
-    for epoch in range(epochs): # TODO: add early stopping based on validation set
+    for epoch in tqdm(range(epochs)): # TODO: add early stopping based on validation set
         epoch_loss_collector = []
-        for batch_idx, (x, target) in enumerate(train_dataloader):
+        for batch_idx, (x, target) in enumerate(tqdm(train_dataloader, leave=False)):
             x, target = x.to(device), target.to(device)
 
             optimizer.zero_grad()
@@ -111,7 +108,6 @@ def train_net(net_id, net, train_dataloader, test_dataloader, epochs, lr, args, 
             cnt += 1
             epoch_loss_collector.append(loss.item())
 
-        #logging.debug('Epoch: %d Loss: %f L2 loss: %f' % (epoch, loss.item(), reg*l2_reg))
         epoch_loss = sum(epoch_loss_collector) / len(epoch_loss_collector)
         logger.info('Epoch: %d Loss: %f' % (epoch, epoch_loss))
 
@@ -129,13 +125,15 @@ def local_train(nets, args, net_dataidx_map, device="cpu"):
     local_datasets = []
     for net_id, net in nets.items():
         if args.retrain:
-            dataidxs = net_dataidx_map[net_id] # TODO: should use interleaved idxs corresponding to label skew
+            dataidxs = net_dataidx_map[net_id]
             logger.info("Training network %s. n_training: %d" % (str(net_id), len(dataidxs)))
             # move the model to cuda device:
             net.to(device)
 
-            train_dl_local, test_dl_local = get_dataloader(args.dataset, args_datadir, args.batch_size, 64, dataidxs, n_clients=args.n_nets)
-            train_dl_global, test_dl_global = get_dataloader(args.dataset, args_datadir, args.batch_size, 64)
+            train_dl_local, test_dl_local = get_dataloader(args.dataset, args_datadir, args.batch_size, 64, dataidxs, n_clients=args.n_nets,
+                                                     num_workers=6, multiprocessing_context=mp.get_context("spawn"), persistent_workers=True)
+            train_dl_global, test_dl_global = get_dataloader(args.dataset, args_datadir, args.batch_size, 64,
+                                                     num_workers=6, multiprocessing_context=mp.get_context("spawn"), persistent_workers=True)
 
             local_datasets.append((train_dl_local, test_dl_local)) # TODO: why
 
@@ -279,9 +277,9 @@ def local_retrain(local_datasets, weights, args, mode="bottom-up", freezing_inde
     logger.info('>> Pre-Training Training accuracy: %f' % train_acc)
     logger.info('>> Pre-Training Test accuracy: %f' % test_acc)
 
-    for epoch in range(retrain_epochs): # TODO: should this also be early stopped based on validation set?
+    for epoch in tqdm(range(retrain_epochs)): # TODO: should this also be early stopped based on validation set?
         epoch_loss_collector = []
-        for batch_idx, (x, target) in enumerate(train_dl_local):
+        for batch_idx, (x, target) in tqdm(enumerate(train_dl_local), leave=False):
             x, target = x.to(device), target.to(device)
 
             optimizer_fine_tune.zero_grad()
@@ -568,7 +566,8 @@ def BBP_MAP(nets_list, model_meta_data, layer_type, net_dataidx_map,
         retrained_nets = []
         for worker_index in range(num_workers):
             dataidxs = net_dataidx_map[worker_index]
-            train_dl_local, test_dl_local = get_dataloader(args.dataset, args_datadir, args.batch_size, 32, dataidxs, n_clients=args.n_nets)
+            train_dl_local, test_dl_local = get_dataloader(args.dataset, args_datadir, args.batch_size, 32, dataidxs, n_clients=args.n_nets,
+                                                     num_workers=6, multiprocessing_context=mp.get_context("spawn"), persistent_workers=True)
 
             logger.info("Re-training on local worker: {}, starting from layer: {}".format(worker_index, 2 * (layer_index + 1) - 2))
             retrained_cnn = local_retrain((train_dl_local,test_dl_local), tempt_weights[worker_index], args, 
@@ -646,7 +645,8 @@ def fedma_comm(batch_weights, model_meta_data, layer_type, net_dataidx_map,
         retrained_nets = []
         for worker_index in range(args.n_nets):
             dataidxs = net_dataidx_map[worker_index]
-            train_dl_local, test_dl_local = get_dataloader(args.dataset, args_datadir, args.batch_size, 32, dataidxs, n_clients=args.n_nets)
+            train_dl_local, test_dl_local = get_dataloader(args.dataset, args_datadir, args.batch_size, 32, dataidxs, n_clients=args.n_nets,
+                                                     num_workers=6, multiprocessing_context=mp.get_context("spawn"), persistent_workers=True)
 
             # for the "squeezing" mode, we pass assignment list wrt this worker to the `local_retrain` function
             recons_local_net = reconstruct_local_net(batch_weights[worker_index], args, ori_assignments=assignments_list, worker_index=worker_index)
@@ -713,16 +713,8 @@ if __name__ == "__main__":
     ### local training stage
     nets_list = local_train(nets, args, net_dataidx_map, device=device)
 
-    train_dl_global, test_dl_global = get_dataloader(args.dataset, args_datadir, args.batch_size, 32)
-
-    # TODO: irrelevant 
-    # ensemble part of experiments
-    logger.info("Computing Uniform ensemble accuracy")
-    uens_train_acc, _ = compute_ensemble_accuracy(nets_list, train_dl_global, n_classes, uniform_weights=True, device=device)
-    uens_test_acc, _ = compute_ensemble_accuracy(nets_list, test_dl_global, n_classes, uniform_weights=True, device=device)
-
-    logger.info("Uniform ensemble (Train acc): {}".format(uens_train_acc))
-    logger.info("Uniform ensemble (Test acc): {}".format(uens_test_acc))
+    train_dl_global, test_dl_global = get_dataloader(args.dataset, args_datadir, args.batch_size, 32,
+                                                     num_workers=6, multiprocessing_context=mp.get_context("spawn"), persistent_workers=True)
 
     hungarian_weights, assignments_list = BBP_MAP(nets_list, model_meta_data, layer_type, net_dataidx_map, averaging_weights, args, n_classes=n_classes, device=device)
 
@@ -742,20 +734,6 @@ if __name__ == "__main__":
         logger.info(aw.shape)
 
     models = nets_list
-    _ = compute_full_cnn_accuracy(models,
-                               hungarian_weights,
-                               train_dl_global,
-                               test_dl_global,
-                               n_classes,
-                               device=device,
-                               args=args)
-
-    _ = compute_model_averaging_accuracy(models,
-                                averaged_weights,
-                                train_dl_global,
-                                test_dl_global,
-                                n_classes,
-                                args)
 
     # FedMA communication rounds
     comm_init_batch_weights = [copy.deepcopy(hungarian_weights) for _ in range(args.n_nets)]
