@@ -79,8 +79,8 @@ def train_aug(img:torch.Tensor, seed, mask:torch.Tensor=None):
     return img, mask
 
 class ImageNet(data.Dataset):
-    def __init__(self, path:str="/thesis/imnetproc", partition:str="train", n_clients:int=4, 
-                 n_classes:int=1000, originalpath:str="/thesis/imagenet"):
+    def __init__(self, path:str="/data/bucket/traincombmodels/imnetproc", partition:str="train", n_clients:int=4, n_classes:int=100):
+        self.partition = partition
         # Set random seed. Wait for global seed to be set, so that each worker gets different seed.
         self.diff_seed = None 
         self.same_seed = torch.Generator()
@@ -88,10 +88,6 @@ class ImageNet(data.Dataset):
         # Augmentations
         self.val_crop = v2.CenterCrop(224)
         self.normalize = v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225], inplace=True)
-        # Create split
-        if not os.path.exists(path):
-            self.repartition(originalpath, path)
-        self.partition = partition
         # Get class names and limit to n_classes by skipping
         with open(os.path.join(path, "mapping.txt")) as f:
             classes = f.readlines()

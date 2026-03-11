@@ -146,10 +146,10 @@ class ResNetBlock(nn.Module):
 class ResNet(nn.Module):
     def __init__(
         self,
-        layers: tuple[int, ...] = (3, 4, 6, 3),
+        layers: tuple[int, ...] = (2, 2, 2, 2),
         kernels: tuple[int, ...] = (64, 128, 256, 512),
         channels_in: int = 3,
-        dim_out: int = 1000,
+        dim_out: int = 100,
     ):
         super().__init__()
         assert len(layers) == len(kernels)
@@ -237,9 +237,9 @@ class ResNetContainer(nn.Module):
     def __init__(
         self,
         num_filters: list,
-        layers: tuple = (3, 4, 6, 3),
+        layers: tuple = (2, 2, 2, 2),
         channels_in: int = 3,
-        dim_out: int = 1000,
+        dim_out: int = 100,
     ):
         super().__init__()
         assert len(num_filters) == 1 + 2 * sum(layers), (

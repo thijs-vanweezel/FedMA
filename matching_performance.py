@@ -33,7 +33,7 @@ def _load_resnet_weights(container, weights):
 def compute_model_averaging_accuracy(models, weights, train_dl, test_dl, n_classes, args):
     """An variant of fedaveraging"""
     if args.model == 'resnet':
-        _DEFAULT_LAYERS = (3, 4, 6, 3)
+        _DEFAULT_LAYERS = (2, 2, 2, 2)
         n_main_convs = 1 + 2 * sum(_DEFAULT_LAYERS)
         num_filters  = [weights[2 * i].shape[0] for i in range(n_main_convs)]
         dim_out      = weights[-1].shape[0]
@@ -72,7 +72,7 @@ def compute_model_averaging_accuracy(models, weights, train_dl, test_dl, n_class
 
 def compute_full_cnn_accuracy(models, weights, train_dl, test_dl, n_classes, device, args):
     if args.model == 'resnet':
-        _DEFAULT_LAYERS = (3, 4, 6, 3)
+        _DEFAULT_LAYERS = (2, 2, 2, 2)
         n_main_convs = 1 + 2 * sum(_DEFAULT_LAYERS)
         num_filters  = [weights[2 * i].shape[0] for i in range(n_main_convs)]
         dim_out      = weights[-1].shape[0]

@@ -159,7 +159,7 @@ def local_retrain(local_datasets, weights, args, mode="bottom-up", freezing_inde
     # 1.  Build matched_cnn from the (post-matching) weight list
     # ------------------------------------------------------------------
     if args.model == 'resnet':
-        _DEFAULT_LAYERS = (3, 4, 6, 3)
+        _DEFAULT_LAYERS = (2, 2, 2, 2)
         n_main_convs = 1 + 2 * sum(_DEFAULT_LAYERS)   # 33 for ResNet-34
         num_filters   = [weights[2 * i].shape[0] for i in range(n_main_convs)]
         dim_out       = weights[-1].shape[0]           # FC bias shape
@@ -317,7 +317,7 @@ def reconstruct_local_net(weights, args, ori_assignments=None, worker_index=0):
         # id_conv weights are not in the matched list; they are re-initialised
         # randomly and trained during local_retrain.
         # ---------------------------------------------------------------
-        _DEFAULT_LAYERS = (3, 4, 6, 3)
+        _DEFAULT_LAYERS = (2, 2, 2, 2)
         n_main_convs = 1 + 2 * sum(_DEFAULT_LAYERS)   # 33 for ResNet-34
         reconstructed_weights = []
 
