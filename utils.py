@@ -159,7 +159,7 @@ def init_models(net_configs, n_nets, args):
         ref = cnns[0]
         # --- initial stem ---
         w = ref.conv.weight
-        model_meta_data.append((w.shape[0], w.shape[1] * w.shape[2] * w.shape[3]))
+        model_meta_data.append(tuple(w.shape))  # (n_out, n_in, kH, kW) — 4D needed by block_patching
         layer_type.append('conv.weight')
         model_meta_data.append(tuple(ref.bn.bias.shape))
         layer_type.append('conv.bias')
@@ -169,7 +169,7 @@ def init_models(net_configs, n_nets, args):
                 conv = getattr(block, conv_attr)
                 bn   = getattr(block, bn_attr)
                 w = conv.weight
-                model_meta_data.append((w.shape[0], w.shape[1] * w.shape[2] * w.shape[3]))
+                model_meta_data.append(tuple(w.shape))  # (n_out, n_in, kH, kW) — 4D needed by block_patching
                 layer_type.append(f'{conv_attr}.weight')
                 model_meta_data.append(tuple(bn.bias.shape))
                 layer_type.append(f'{conv_attr}.bias')
