@@ -208,7 +208,7 @@ def get_dataloader(dataset, datadir, train_bs, test_bs, dataidxs=None, **kwargs)
         "n_clients must be provided when dataidxs is not None"
     img_kwargs = {} if n_clients is None else {"n_clients": n_clients}
     train_ds = ImageNet_truncated(dataidxs=dataidxs, partition="train", **img_kwargs)
-    test_ds  = ImageNet_truncated(dataidxs=dataidxs, partition="test",   **img_kwargs)
+    test_ds  = ImageNet_truncated(dataidxs=None, partition="val", **img_kwargs)
     train_dl = data.DataLoader(
         train_ds,
         batch_size=train_bs,
