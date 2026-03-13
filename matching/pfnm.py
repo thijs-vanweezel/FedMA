@@ -862,39 +862,28 @@ def layer_wise_group_descent(batch_weights, layer_index, batch_frequencies, sigm
             sigma_inv_layer = [np.array(init_channel_kernel_dims[layer_index - 1] * [1 / sigma] + [1 / sigma_bias]) for j in range(J)]
 
     elif layer_index == (n_layers - 1) and n_layers > 2:
-        # our assumption is that this branch will consistently handle the last fc layers
+        # For ResNet-like topologies, this index can still be a conv layer
+        # (because the final classifier is averaged outside matching).
         layer_type = model_layer_type[2 * layer_index - 2]
-        prev_layer_type = model_layer_type[2 * layer_index - 2 - 2]
-        first_fc_identifier = (('fc' in layer_type or 'classifier' in layer_type) and ('conv' in prev_layer_type or 'features' in layer_type))
 
-        # if first_fc_identifier:
-        #     weights_bias = [np.hstack((batch_weights[j][2 * layer_index - 2].T, 
-        #                                 batch_weights[j][2 * layer_index - 1].reshape(-1, 1),
-        #                                 batch_weights[j][2 * layer_index])) for j in range(J)]
-        # else:
-        #     weights_bias = [np.hstack((batch_weights[j][2 * layer_index - 2].T, 
-        #                                 batch_weights[j][2 * layer_index - 1].reshape(-1, 1),
-        #                                 batch_weights[j][2 * layer_index])) for j in range(J)]
-
-        # we switch to ignore the last layer here:
-        if first_fc_identifier:
-            weights_bias = [np.hstack((batch_weights[j][2 * layer_index - 2].T, 
-                                        batch_weights[j][2 * layer_index - 1].reshape(-1, 1))) for j in range(J)]
+        if 'conv' in layer_type or 'features' in layer_type:
+            weights_bias = [
+                np.hstack((
+                    batch_weights[j][2 * layer_index - 2],
+                    batch_weights[j][2 * layer_index - 1].reshape(-1, 1)
+                )) for j in range(J)
+            ]
         else:
-            weights_bias = [np.hstack((batch_weights[j][2 * layer_index - 2].T, 
-                                        batch_weights[j][2 * layer_index - 1].reshape(-1, 1))) for j in range(J)]
-
+            # fc / classifier case
+            weights_bias = [
+                np.hstack((
+                    batch_weights[j][2 * layer_index - 2].T,
+                    batch_weights[j][2 * layer_index - 1].reshape(-1, 1)
+                )) for j in range(J)
+            ]
 
         sigma_inv_prior = np.array([1 / sigma0_bias] + (weights_bias[0].shape[1] - 1) * [1 / sigma0])
         mean_prior = np.array([mu0_bias] + (weights_bias[0].shape[1] - 1) * [mu0])
-        
-        # hwang: this needs to be handled carefully
-        #sigma_inv_layer = [np.array([1 / sigma_bias] + [y / sigma for y in last_layer_const[j]]) for j in range(J)]
-        #sigma_inv_layer = [np.array([1 / sigma_bias] + (weights_bias[j].shape[1] - 1) * [1 / sigma]) for j in range(J)]
-
-        #sigma_inv_layer = [np.array((matching_shapes[layer_index - 2]) * [1 / sigma] + [1 / sigma_bias] + [y / sigma for y in last_layer_const[j]]) for j in range(J)]
-        
-        #sigma_inv_layer = [np.array((matching_shapes[layer_index - 2]) * [1 / sigma] + [1 / sigma_bias]) for j in range(J)]
         sigma_inv_layer = [np.array([1 / sigma_bias] + (weights_bias[j].shape[1] - 1) * [1 / sigma]) for j in range(J)]
 
     elif (layer_index > 1 and layer_index < (n_layers - 1)):
