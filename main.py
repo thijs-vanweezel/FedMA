@@ -547,11 +547,20 @@ def BBP_MAP(nets_list, model_meta_data, layer_type, net_dataidx_map,
                                         matching_shapes=matching_shapes, layer_type=l_type,
                                         dataset=args.dataset, network_name=args.model)
                 elif l_type == "fc":
-                    patched_weight = block_patching(batch_weights[worker_index][2 * (layer_index + 1) - 2].T, 
-                                        L_next, assignment[worker_index], 
-                                        layer_index+1, model_meta_data,
-                                        matching_shapes=matching_shapes, layer_type=l_type,
-                                        dataset=args.dataset, network_name=args.model).T
+                    # For ResNet (GAP before classifier), FC patching is direct
+                    # neuron permutation, no conv-block reshaping required.
+                    if args.model == "resnet":
+                        patched_weight = patch_weights(
+                            batch_weights[worker_index][2 * (layer_index + 1) - 2].T,
+                            L_next,
+                            assignment[worker_index]
+                        ).T
+                    else:
+                        patched_weight = block_patching(batch_weights[worker_index][2 * (layer_index + 1) - 2].T, 
+                                            L_next, assignment[worker_index], 
+                                            layer_index+1, model_meta_data,
+                                            matching_shapes=matching_shapes, layer_type=l_type,
+                                            dataset=args.dataset, network_name=args.model).T
 
             elif layer_index >= first_fc_index:
                 patched_weight = patch_weights(batch_weights[worker_index][2 * (layer_index + 1) - 2].T, L_next, assignment[worker_index]).T
